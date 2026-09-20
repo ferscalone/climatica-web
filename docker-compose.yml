@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: climatica
+      POSTGRES_PASSWORD: climatica
+      POSTGRES_DB: climatica
+    volumes:
+      - climatica_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U climatica"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Формат "id:ip,id:ip,..." — под реальные камеры из вашей сети
+      CHAMBERS: "1:192.168.1.106,2:192.168.1.252,3:192.168.0.45"
+      UDP_PORT: "5001"
+      POLL_INTERVAL_MS: "1000"
+      DATABASE_URL: "postgresql+asyncpg://climatica:climatica@db:5432/climatica"
+    ports:
+      - "8000:8000"
+    # ВАЖНО про сеть камер:
+    # Камеры общаются по UDP в локальной сети предприятия. По умолчанию
+    # bridge-сеть Docker обычно достаточна — если docker-хост физически
+    # находится в той же подсети, что и камеры (например, тот же Ethernet-
+    # сегмент 192.168.1.0/24), контейнер сможет достучаться до них и через
+    # обычный bridge, т.к. UDP-пакеты роутятся через хост наружу.
+    #
+    # Если же камеры НЕ пингуются из контейнера (проверить: `docker compose
+    # exec backend ping 192.168.1.106`), раскомментируйте строку ниже —
+    # это даст контейнеру сетевой стек хоста напрямую:
+    # network_mode: "host"
+
+volumes:
+  climatica_pgdata:

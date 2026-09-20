@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Climatica</title>
+<script src="/vendor/chart.umd.js"></script>
+<style>
+    body {
+        background: #1a1a1a;
+        color: #eee;
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+    }
+
+    h1 {
+        margin: 0 0 20px 0;
+        font-size: 22px;
+    }
+
+    #grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+        gap: 16px;
+    }
+
+    .panel {
+        background: #2b2b2b;
+        border: 1px solid #444;
+        border-radius: 8px;
+        padding: 16px;
+    }
+
+    .panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+
+    .panel-header b {
+        font-size: 15px;
+    }
+
+    .status {
+        font-weight: bold;
+        font-size: 13px;
+    }
+
+    .status.online { color: #3ddc84; }
+    .status.offline { color: #ff5252; }
+
+    .temperature {
+        text-align: center;
+        font-size: 34px;
+        font-weight: bold;
+        color: #00ff80;
+        margin: 8px 0;
+    }
+
+    .updated {
+        font-size: 12px;
+        color: #999;
+        margin-top: 6px;
+    }
+
+    .actions {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+    }
+
+    .actions a {
+        flex: 1;
+        text-align: center;
+        padding: 6px 10px;
+        background: #3a3a3a;
+        border-radius: 6px;
+        color: #ddd;
+        text-decoration: none;
+        font-size: 13px;
+    }
+
+    .actions a:hover {
+        background: #474747;
+    }
+
+    canvas {
+        max-height: 220px;
+    }
+</style>
+</head>
+<body>
+
+<h1>Climatica — мониторинг климатических камер</h1>
+<div id="grid"></div>
+
+<script>
+const GRID = document.getElementById("grid");
+const panels = {};   // chamber_id -> { chart, els }
+
+function fmtTime(iso) {
+    if (!iso) return "---";
+    const d = new Date(iso);
+    return d.toLocaleString("ru-RU");
+}
+
+function createPanel(chamberId, ip) {
+    const panel = document.createElement("div");
+    panel.className = "panel";
+
+    panel.innerHTML = `
+        <div class="panel-header">
+            <b>Камера ${chamberId} (${ip})</b>
+            <span class="status offline" id="status-${chamberId}">● OFFLINE</span>
+        </div>
+        <div class="temperature" id="temp-${chamberId}">--.-- °C</div>
+        <canvas id="chart-${chamberId}"></canvas>
+        <div class="updated" id="updated-${chamberId}">Последнее обновление: ---</div>
+        <div class="actions">
+            <a href="/api/export/${chamberId}?format=csv" target="_blank">Скачать CSV</a>
+            <a href="/api/export/${chamberId}?format=xlsx" target="_blank">Скачать Excel</a>
+        </div>
+    `;
+
+    GRID.appendChild(panel);
+
+    const ctx = panel.querySelector(`#chart-${chamberId}`).getContext("2d");
+
+    const chart = new Chart(ctx, {
+        type: "line",
+        data: {
+            labels: [],
+            datasets: [{
+                label: "°C",
+                data: [],
+                borderColor: "#00c8ff",
+                backgroundColor: "transparent",
+                tension: 0.2,
+                pointRadius: 0,
+            }]
+        },
+        options: {
+            animation: false,
+            responsive: true,
+            scales: {
+                x: { display: false },
+                y: {
+                    ticks: { color: "#ccc" },
+                    grid: { color: "#3a3a3a" }
+                }
+            },
+            plugins: {
+                legend: { display: false }
+            }
+        }
+    });
+
+    return {
+        chart,
+        statusEl: panel.querySelector(`#status-${chamberId}`),
+        tempEl: panel.querySelector(`#temp-${chamberId}`),
+        updatedEl: panel.querySelector(`#updated-${chamberId}`),
+    };
+}
+
+function pushPoint(chamberId, temperature, recordedAt) {
+    const p = panels[chamberId];
+    if (!p) return;
+
+    const label = new Date(recordedAt).toLocaleTimeString("ru-RU");
+
+    p.chart.data.labels.push(label);
+    p.chart.data.datasets[0].data.push(temperature);
+
+    // Ограничиваем число точек на графике (аналог GRAPH_POINTS)
+    const MAX_POINTS = 600;
+    if (p.chart.data.labels.length > MAX_POINTS) {
+        p.chart.data.labels.shift();
+        p.chart.data.datasets[0].data.shift();
+    }
+
+    p.chart.update();
+}
+
+function applyUpdate(msg) {
+    const p = panels[msg.chamber_id];
+    if (!p) return;
+
+    if (msg.online) {
+        p.statusEl.textContent = "● ONLINE";
+        p.statusEl.className = "status online";
+        p.tempEl.textContent = msg.temperature.toFixed(2) + " °C";
+        p.updatedEl.textContent = "Последнее обновление: " + fmtTime(msg.recorded_at);
+        pushPoint(msg.chamber_id, msg.temperature, msg.recorded_at);
+    } else {
+        p.statusEl.textContent = "● OFFLINE";
+        p.statusEl.className = "status offline";
+        p.tempEl.textContent = "--.-- °C";
+    }
+}
+
+async function loadHistory(chamberId) {
+    const res = await fetch(`/api/history/${chamberId}`);
+    if (!res.ok) return;
+
+    const rows = await res.json();
+    const p = panels[chamberId];
+
+    for (const row of rows) {
+        if (row.online) {
+            p.chart.data.labels.push(new Date(row.recorded_at).toLocaleTimeString("ru-RU"));
+            p.chart.data.datasets[0].data.push(row.temperature);
+        }
+    }
+    p.chart.update();
+
+    if (rows.length > 0) {
+        const last = rows[rows.length - 1];
+        p.tempEl.textContent = last.temperature.toFixed(2) + " °C";
+        p.updatedEl.textContent = "Последнее обновление: " + fmtTime(last.recorded_at);
+        p.statusEl.textContent = last.online ? "● ONLINE" : "● OFFLINE";
+        p.statusEl.className = "status " + (last.online ? "online" : "offline");
+    }
+}
+
+function connectWebSocket() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+    ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "measurement") {
+            applyUpdate(msg);
+        }
+    };
+
+    ws.onclose = () => {
+        // Простая переподключалка через 2 секунды
+        setTimeout(connectWebSocket, 2000);
+    };
+}
+
+async function init() {
+    const res = await fetch("/api/chambers");
+    const chambers = await res.json();
+
+    for (const { chamber_id, ip } of chambers) {
+        panels[chamber_id] = createPanel(chamber_id, ip);
+    }
+
+    for (const { chamber_id } of chambers) {
+        await loadHistory(chamber_id);
+    }
+
+    connectWebSocket();
+}
+
+init();
+</script>
+</body>
+</html>
