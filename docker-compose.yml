@@ -1,3 +1,7 @@
+# Имя проекта зафиксировано: контейнеры и том с базой (climatica_climatica_pgdata)
+# не зависят от того, в какой папке лежит проект на сервере.
+name: climatica
+
 services:
   db:
     image: postgres:16-alpine
@@ -8,8 +12,11 @@ services:
       POSTGRES_DB: climatica
     volumes:
       - climatica_pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # Порт наружу не публикуется: backend ходит в базу по имени "db" внутри
+    # compose-сети. Если нужен доступ к базе с хоста (psql, DBeaver) —
+    # раскомментируйте, выбрав свободный порт слева:
+    # ports:
+    #   - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U climatica"]
       interval: 5s
@@ -24,25 +31,86 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
     environment:
       # Формат "id:ip,id:ip,..." — под реальные камеры из вашей сети
-      CHAMBERS: "1:192.168.1.106,2:192.168.1.252,3:192.168.0.45"
+      CHAMBERS: "${CHAMBERS:-1:192.168.1.106,2:192.168.1.252,3:192.168.0.45}"
       UDP_PORT: "5001"
       POLL_INTERVAL_MS: "1000"
       DATABASE_URL: "postgresql+asyncpg://climatica:climatica@db:5432/climatica"
+      TELEGRAM_BOT_INTERNAL_URL: "http://telegram-bot:8090"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:-}"
+      TIMEZONE: "${TIMEZONE:-Europe/Moscow}"
+      LOG_DIR: "/app/logs"
+    volumes:
+      # Файловый журнал (journal.log) и лог приложения — переживают пересборку
+      - ./logs:/app/logs
     ports:
       - "8000:8000"
+    networks:
+      default: {}
+      # Общая сеть шлюза TMVOS: nginx ходит сюда по имени "climatica"
+      # (http://climatica:8000) и публикует панель как http://tmvos.panel/climatica/
+      tmvos:
+        aliases: [climatica]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     # ВАЖНО про сеть камер:
     # Камеры общаются по UDP в локальной сети предприятия. По умолчанию
     # bridge-сеть Docker обычно достаточна — если docker-хост физически
-    # находится в той же подсети, что и камеры (например, тот же Ethernet-
-    # сегмент 192.168.1.0/24), контейнер сможет достучаться до них и через
-    # обычный bridge, т.к. UDP-пакеты роутятся через хост наружу.
+    # находится в той же подсети, что и камеры, контейнер достучится до них
+    # через обычный bridge, т.к. UDP-пакеты роутятся через хост наружу.
     #
-    # Если же камеры НЕ пингуются из контейнера (проверить: `docker compose
-    # exec backend ping 192.168.1.106`), раскомментируйте строку ниже —
-    # это даст контейнеру сетевой стек хоста напрямую:
+    # Если камеры НЕ пингуются из контейнера (проверить: `docker compose
+    # exec backend ping 192.168.1.106`), раскомментируйте строку ниже:
     # network_mode: "host"
+    # НО: в host-режиме backend выходит из compose-сети и перестаёт видеть
+    # бота по имени telegram-bot. Тогда же поменяйте
+    #   TELEGRAM_BOT_INTERNAL_URL: "http://localhost:8090"
+    #   DATABASE_URL: "postgresql+asyncpg://climatica:climatica@localhost:5432/climatica"
+    # и у бота BACKEND_URL: "http://host.docker.internal:8000" (или IP хоста).
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bot
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Токен и chat_id удобнее задать в корневом .env (см. .env.example)
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_IDS: "${TELEGRAM_CHAT_IDS:-}"
+      TELEGRAM_PROXY_URL: "${TELEGRAM_PROXY_URL:-}"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:-}"
+      BACKEND_URL: "http://backend:8000"
+      TIMEZONE: "${TIMEZONE:-Europe/Moscow}"
+    # Порт наружу не публикуется: бот нужен только backend'у внутри compose-сети
+
+  # VLESS-клиент с HTTP-прокси внутри compose-сети: через него бот ходит в
+  # api.telegram.org (TELEGRAM_PROXY_URL=http://xray:8888). Больше никто его
+  # не использует, порт наружу не публикуется. Настройки — в xray/config.json
+  # (образец: xray/config.example.json).
+  xray:
+    image: teddysun/xray
+    restart: unless-stopped
+    volumes:
+      - ./xray:/etc/xray:ro
 
 volumes:
   climatica_pgdata:
+
+networks:
+  # Создаётся один раз командой: docker network create tmvos
+  tmvos:
+    external: true

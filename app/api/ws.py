@@ -12,16 +12,10 @@ router = APIRouter()
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """
-    Клиент подключается сюда и получает поток сообщений вида:
+    Клиент подключается сюда и получает поток сообщений двух типов:
 
-    {
-        "type": "measurement",
-        "chamber_id": 1,
-        "ip": "192.168.1.106",
-        "temperature": 4.32,
-        "online": true,
-        "recorded_at": "2026-09-09T12:00:00+00:00"
-    }
+    {"type": "measurement", "chamber_id": 1, "temperature": 4.32, "online": true, ...}
+    {"type": "alert", "id": 17, "alert_type": "chamber_offline", "message": "...", ...}
 
     Начальную историю для графиков фронтенд получает отдельно через
     GET /api/history/{chamber_id} — WS отдаёт только "живые" обновления.
@@ -33,6 +27,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             # Держим соединение открытым; входящие сообщения от клиента
             # сейчас не используются, но чтение нужно для детекции разрыва.
             await websocket.receive_text()
-
     except WebSocketDisconnect:
+        pass
+    finally:
+        # Любой обрыв (не только штатный WebSocketDisconnect) убирает соединение
         broadcaster.disconnect(websocket)

@@ -2,258 +2,1383 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Climatica</title>
-<script src="/vendor/chart.umd.js"></script>
+<!-- Все библиотеки лежат локально: на площадке с камерами интернета может не быть.
+     Все пути в этом файле ОТНОСИТЕЛЬНЫЕ (vendor/..., api/..., ws): страница работает
+     и из корня (http://host:8000/), и из под-пути за шлюзом (http://tmvos.panel/climatica/). -->
+<script src="vendor/chart.umd.js"></script>
+<script src="vendor/hammer.min.js"></script>
+<script src="vendor/chartjs-plugin-zoom.min.js"></script>
+<script src="vendor/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
+    :root {
+        --bg: #1a1a1a;
+        --panel: #2b2b2b;
+        --panel-2: #232323;
+        --border: #444;
+        --text: #eee;
+        --muted: #999;
+        --accent: #00c8ff;
+        --btn: #3a3a3a;
+        --btn-hover: #4a4a4a;
+        --ok: #3ddc84;
+        --warn: #ffb74d;
+        --err: #ff5252;
+        --import: #b388ff;
+        --humidity: #7cb342;
+    }
+
+    * { box-sizing: border-box; }
+
     body {
-        background: #1a1a1a;
-        color: #eee;
+        background: var(--bg);
+        color: var(--text);
         font-family: system-ui, sans-serif;
         margin: 0;
         padding: 24px;
     }
 
-    h1 {
-        margin: 0 0 20px 0;
-        font-size: 22px;
+    .page-header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px;
     }
 
-    #grid {
+    h1 { margin: 0; font-size: 22px; }
+    h2 { margin: 0 0 12px 0; font-size: 18px; }
+
+    .header-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+    .conn { font-size: 12px; color: var(--muted); }
+    .conn.ok { color: var(--ok); }
+    .conn.bad { color: var(--err); }
+
+    .hint {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 0 0 16px 0;
+        line-height: 1.45;
+    }
+
+    .bar {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+    }
+
+    #grid, #imports {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
         gap: 16px;
     }
 
+    #imports { margin-bottom: 16px; }
+
     .panel {
-        background: #2b2b2b;
-        border: 1px solid #444;
+        background: var(--panel);
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 16px;
+        min-width: 0;
     }
+
+    .panel.mode-history { border-color: #2a6a94; }
+    .panel.mode-import { border-color: var(--import); }
 
     .panel-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
         margin-bottom: 8px;
-    }
-
-    .panel-header b {
-        font-size: 15px;
-    }
-
-    .status {
-        font-weight: bold;
-        font-size: 13px;
-    }
-
-    .status.online { color: #3ddc84; }
-    .status.offline { color: #ff5252; }
-
-    .temperature {
-        text-align: center;
-        font-size: 34px;
-        font-weight: bold;
-        color: #00ff80;
-        margin: 8px 0;
-    }
-
-    .updated {
-        font-size: 12px;
-        color: #999;
-        margin-top: 6px;
-    }
-
-    .actions {
-        margin-top: 10px;
-        display: flex;
         gap: 8px;
     }
 
-    .actions a {
-        flex: 1;
-        text-align: center;
-        padding: 6px 10px;
-        background: #3a3a3a;
+    .panel-header b { font-size: 15px; }
+
+    .status { font-weight: bold; font-size: 13px; white-space: nowrap; }
+    .status.online { color: var(--ok); }
+    .status.offline { color: var(--err); }
+    .status.unknown { color: var(--muted); }
+    .status.file { color: var(--import); }
+
+    .values {
+        display: flex;
+        justify-content: center;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 6px 22px;
+        margin: 6px 0 8px;
+    }
+
+    .temperature { font-size: 34px; font-weight: bold; color: #00ff80; }
+    .temperature.breach { color: var(--err); }
+    .temperature.stale { color: var(--muted); }
+    .secondary { font-size: 14px; color: #ccc; }
+    .secondary b { font-size: 18px; }
+    .secondary.breach b { color: var(--err); }
+
+    .mode-badge {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 10px;
+        background: #1e4d6b;
+        color: #cfe8ff;
+        margin-left: 6px;
+        vertical-align: middle;
+    }
+
+    .thresholds {
+        background: var(--panel-2);
+        border: 1px solid #383838;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
+        font-size: 13px;
+    }
+
+    .threshold-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        padding: 2px 0;
+    }
+
+    .threshold-row.breach { color: var(--err); font-weight: bold; }
+    .threshold-row.disabled .range { color: var(--muted); text-decoration: line-through; }
+
+    .link-btn {
+        background: none;
+        border: none;
+        color: var(--accent);
+        cursor: pointer;
+        font-size: 12px;
+        padding: 2px 4px;
+        font-family: inherit;
+    }
+
+    .threshold-form {
+        display: none;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px dashed #444;
+    }
+
+    .threshold-form.open { display: grid; }
+    .threshold-form .full { grid-column: 1 / -1; }
+    .threshold-form .form-title { grid-column: 1 / -1; font-weight: bold; }
+    .threshold-form .form-error { grid-column: 1 / -1; color: #ff8a80; font-size: 12px; min-height: 1em; }
+
+    label.field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        color: #bbb;
+        font-size: 12px;
+    }
+
+    label.check { display: flex; align-items: center; gap: 6px; color: #ccc; font-size: 13px; }
+
+    input[type="datetime-local"], input[type="number"], input[type="text"], textarea, select {
+        background: #222;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 13px;
+        font-family: inherit;
+        width: 100%;
+    }
+
+    textarea { resize: vertical; min-height: 48px; }
+
+    .chart-wrap { position: relative; height: 260px; }
+
+    .updated, .meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .meta.error { color: #ff8a80; }
+
+    .controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin: 10px 0 6px;
+    }
+
+    .presets { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--muted); align-items: center; }
+    .presets button { min-width: 0; flex: 0 0 auto; padding: 3px 9px; font-size: 12px; }
+
+    .actions { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
+
+    button, .btn {
+        padding: 7px 10px;
+        background: var(--btn);
         border-radius: 6px;
         color: #ddd;
         text-decoration: none;
         font-size: 13px;
+        border: 1px solid transparent;
+        cursor: pointer;
+        font-family: inherit;
+        text-align: center;
     }
 
-    .actions a:hover {
-        background: #474747;
+    .actions > * { flex: 1; min-width: 110px; }
+
+    button:hover, .btn:hover { background: var(--btn-hover); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button.primary { background: #1e4d6b; border-color: #2a6a94; }
+    button.primary:hover { background: #276088; }
+    button.danger { background: #4a2a2a; }
+
+    .file-btn { display: inline-block; position: relative; overflow: hidden; }
+    .file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+    /* ---------- Журнал ---------- */
+    #journal {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+        margin-top: 24px;
     }
 
-    canvas {
-        max-height: 220px;
+    .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+    .tabs button.active { background: #1e4d6b; border-color: #2a6a94; }
+
+    .journal-controls {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 8px;
+        align-items: end;
+        margin-bottom: 12px;
+    }
+
+    .table-wrap { overflow-x: auto; max-height: 460px; overflow-y: auto; }
+
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { border-bottom: 1px solid #3a3a3a; padding: 6px 8px; text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: var(--panel); color: #bbb; font-weight: 600; }
+    td.nowrap { white-space: nowrap; }
+    tr.sev-critical td:first-child { border-left: 3px solid var(--err); }
+    tr.sev-warning td:first-child { border-left: 3px solid var(--warn); }
+    tr.sev-info td:first-child { border-left: 3px solid #555; }
+    .muted { color: var(--muted); }
+
+    /* ---------- Всплывающие уведомления внутри страницы ---------- */
+    #toasts {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 1000;
+        max-width: min(420px, calc(100vw - 32px));
+    }
+
+    .toast {
+        background: #333;
+        border: 1px solid #555;
+        border-left: 4px solid var(--accent);
+        border-radius: 6px;
+        padding: 10px 12px;
+        font-size: 13px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+        cursor: pointer;
+    }
+
+    .toast.critical { border-left-color: var(--err); }
+    .toast.warning { border-left-color: var(--warn); }
+    .toast b { display: block; margin-bottom: 4px; }
+
+    @media (max-width: 560px) {
+        body { padding: 12px; }
+        #grid, #imports { grid-template-columns: 1fr; }
+        .controls { grid-template-columns: 1fr; }
     }
 </style>
 </head>
 <body>
 
-<h1>Climatica — мониторинг климатических камер</h1>
+<div class="page-header">
+    <h1>Climatica — мониторинг климатических камер</h1>
+    <div class="header-actions">
+        <span class="conn" id="conn">● подключение…</span>
+        <button type="button" id="notify-btn">🔔 Включить уведомления браузера</button>
+        <a class="btn" href="#journal">📋 Журнал</a>
+    </div>
+</div>
+<p class="hint">
+    Колесо мыши — масштаб, перетаскивание — сдвиг графика, Shift + рамка — выделить участок,
+    двойной клик — сбросить масштаб. Наведите курсор на линию, чтобы увидеть значения в точке.
+    Красная заливка — периоды без связи с камерой, пунктир — граничные значения.
+    Чтобы не качать всю историю, задайте начало и конец среза и нажмите «Показать период».
+</p>
+
+<div class="bar">
+    <span>Открыть сохранённый файл как график (в базу ничего не записывается):</span>
+    <label class="file-btn btn">
+        Импорт CSV / Excel
+        <input id="import-file" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+    </label>
+    <span class="meta" id="import-status"></span>
+</div>
+<div id="imports"></div>
 <div id="grid"></div>
 
+<section id="journal">
+    <h2>Журнал</h2>
+    <div class="tabs">
+        <button type="button" data-tab="alerts" class="active">Уведомления</button>
+        <button type="button" data-tab="audit">Изменения границ</button>
+    </div>
+    <div class="journal-controls">
+        <label class="field">С
+            <input type="datetime-local" id="j-from" step="1">
+        </label>
+        <label class="field">По
+            <input type="datetime-local" id="j-to" step="1">
+        </label>
+        <label class="field">Камера
+            <select id="j-chamber"><option value="">Все</option></select>
+        </label>
+        <button type="button" class="primary" id="j-show">Показать</button>
+        <a class="btn" id="j-csv" href="#">Скачать CSV</a>
+        <a class="btn" id="j-xlsx" href="#">Скачать Excel</a>
+        <a class="btn" href="api/journal/download" title="Полная копия файла журнала (все события с момента установки)">Копия всего журнала (.log)</a>
+    </div>
+    <div class="meta" id="j-meta"></div>
+    <div class="table-wrap"><table id="j-table"></table></div>
+</section>
+
+<div id="toasts"></div>
+
 <script>
+// chartjs-plugin-zoom 2.x сам регистрируется в Chart.js при подключении через <script>,
+// но повторная регистрация безопасна — на случай замены файла другой версией.
+if (window.ChartZoom) Chart.register(window.ChartZoom);
+
+// Название камеры по её номеру (названия приходят с сервера, настройка CHAMBER_NAMES)
+const chamberNames = {};
+function chamberName(id) {
+    if (id == null) return "—";
+    return chamberNames[id] || `Камера ${id}`;
+}
+
 const GRID = document.getElementById("grid");
-const panels = {};   // chamber_id -> { chart, els }
+const IMPORTS = document.getElementById("imports");
+const panels = {};
+const thresholds = {};           // `${chamber}:${parameter}` -> threshold
+const LIVE_MAX_POINTS = 3000;
+let importSeq = 0;
+
+const PARAM_INFO = {
+    temperature: { label: "Температура", unit: "°C" },
+    humidity: { label: "Влажность", unit: "%" },
+};
+
+// Серии графика: поле в данных -> как рисовать
+const SERIES = {
+    temperature: { label: "Температура, °C", color: "#00c8ff", axis: "y", fill: true },
+    target_temperature: { label: "Уставка температуры, °C", color: "#ffb74d", axis: "y", dash: [6, 4] },
+    humidity: { label: "Влажность, %", color: "#7cb342", axis: "y1" },
+    target_humidity: { label: "Уставка влажности, %", color: "#c5e1a5", axis: "y1", dash: [6, 4] },
+};
+
+// ------------------------------------------------------------------ helpers
 
 function fmtTime(iso) {
     if (!iso) return "---";
-    const d = new Date(iso);
-    return d.toLocaleString("ru-RU");
+    return new Date(iso).toLocaleString("ru-RU");
 }
 
-function createPanel(chamberId, ip) {
+function fmtNum(v, digits = 2) {
+    return v == null ? "--.--" : Number(v).toFixed(digits);
+}
+
+function fmtBound(v) {
+    return v == null ? "—" : String(Number(v));
+}
+
+function toIso(localValue) {
+    if (!localValue) return "";
+    const d = new Date(localValue);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toISOString();
+}
+
+function toLocalInput(date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
+function rangeParams(fromEl, toEl) {
+    const params = new URLSearchParams();
+    const from = toIso(fromEl.value);
+    const to = toIso(toEl.value);
+    if (from) params.set("date_from", from);
+    if (to) params.set("date_to", to);
+    return params;
+}
+
+function describeSlice(payload) {
+    if (!payload) return "";
+    if (payload.downsampled) {
+        return `Показано ${payload.returned} из ${payload.total} точек (прорежено для графика, пики и разрывы сохранены). Экспорт скачает полный срез.`;
+    }
+    return `Точек на графике: ${payload.returned ?? payload.points?.length ?? 0}`;
+}
+
+async function errorText(res, fallback) {
+    try {
+        const body = await res.json();
+        if (typeof body.detail === "string") return body.detail;
+        if (Array.isArray(body.detail)) return body.detail.map((d) => d.msg).join("; ");
+    } catch (e) { /* не JSON */ }
+    return fallback;
+}
+
+// ---------------------------------------------------------- chart plugins
+
+// Заливка периодов без связи: chart.$offline = [[startMs, endMs], ...]
+const offlinePlugin = {
+    id: "offlineBands",
+    beforeDatasetsDraw(chart) {
+        const bands = chart.$offline || [];
+        if (!bands.length) return;
+        const { ctx, chartArea: area, scales: { x } } = chart;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(area.left, area.top, area.right - area.left, area.bottom - area.top);
+        ctx.clip();
+        ctx.fillStyle = "rgba(255, 82, 82, 0.16)";
+        for (const [start, end] of bands) {
+            const x1 = x.getPixelForValue(start);
+            const x2 = Math.max(x.getPixelForValue(end), x1 + 2);
+            if (x2 < area.left || x1 > area.right) continue;
+            ctx.fillRect(x1, area.top, x2 - x1, area.bottom - area.top);
+        }
+        ctx.restore();
+    },
+};
+
+// Горизонтальные пунктирные линии границ: chart.$limits = [{axis, value, color}]
+const limitsPlugin = {
+    id: "thresholdLines",
+    afterDatasetsDraw(chart) {
+        const lines = chart.$limits || [];
+        if (!lines.length) return;
+        const { ctx, chartArea: area } = chart;
+        ctx.save();
+        ctx.setLineDash([5, 5]);
+        ctx.lineWidth = 1;
+        for (const line of lines) {
+            const scale = chart.scales[line.axis];
+            if (!scale) continue;
+            const y = scale.getPixelForValue(line.value);
+            if (y < area.top || y > area.bottom) continue;
+            ctx.strokeStyle = line.color;
+            ctx.beginPath();
+            ctx.moveTo(area.left, y);
+            ctx.lineTo(area.right, y);
+            ctx.stroke();
+        }
+        ctx.restore();
+    },
+};
+
+Chart.register(offlinePlugin, limitsPlugin);
+
+// ------------------------------------------------------------------ charts
+
+function seriesFor(caps) {
+    const fields = ["temperature"];
+    if (caps.has_target_temperature) fields.push("target_temperature");
+    if (caps.has_humidity) fields.push("humidity");
+    if (caps.has_target_humidity) fields.push("target_humidity");
+    return fields;
+}
+
+function makeChart(canvas, fields) {
+    const hasY1 = fields.some((f) => SERIES[f].axis === "y1");
+    const datasets = fields.map((field) => {
+        const s = SERIES[field];
+        return {
+            label: s.label,
+            field,
+            data: [],
+            yAxisID: s.axis,
+            borderColor: s.color,
+            backgroundColor: s.fill ? "rgba(0, 200, 255, 0.08)" : s.color,
+            fill: !!s.fill,
+            borderDash: s.dash || [],
+            tension: 0.15,
+            spanGaps: false,          // null-точка (нет связи) разрывает линию
+            pointRadius: 0,
+            pointHoverRadius: 5,
+            pointHitRadius: 12,
+            pointBackgroundColor: s.color,
+            borderWidth: 1.5,
+        };
+    });
+
+    const chart = new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: { datasets },
+        options: {
+            animation: false,
+            responsive: true,
+            maintainAspectRatio: false,
+            parsing: false,
+            normalized: true,
+            interaction: { mode: "nearest", intersect: false, axis: "x" },
+            scales: {
+                x: {
+                    type: "time",
+                    time: {
+                        tooltipFormat: "dd.MM.yyyy HH:mm:ss",
+                        displayFormats: {
+                            second: "HH:mm:ss",
+                            minute: "HH:mm",
+                            hour: "dd.MM HH:mm",
+                            day: "dd.MM",
+                        },
+                    },
+                    ticks: { color: "#ccc", maxRotation: 0, autoSkip: true },
+                    grid: { color: "#3a3a3a" },
+                },
+                y: {
+                    position: "left",
+                    title: { display: true, text: "°C", color: "#aaa" },
+                    ticks: { color: "#ccc" },
+                    grid: { color: "#3a3a3a" },
+                },
+                y1: {
+                    display: hasY1,
+                    position: "right",
+                    title: { display: true, text: "%", color: "#aaa" },
+                    ticks: { color: "#ccc" },
+                    grid: { drawOnChartArea: false },
+                },
+            },
+            plugins: {
+                legend: {
+                    display: fields.length > 1,
+                    labels: { color: "#ccc", boxWidth: 14, font: { size: 11 } },
+                },
+                tooltip: {
+                    mode: "index",
+                    intersect: false,
+                    callbacks: {
+                        title(items) {
+                            if (!items.length) return "";
+                            return new Date(items[0].parsed.x).toLocaleString("ru-RU");
+                        },
+                        label(item) {
+                            if (item.parsed.y == null) return `${item.dataset.label}: нет связи`;
+                            return `${item.dataset.label}: ${item.parsed.y.toFixed(2)}`;
+                        },
+                    },
+                },
+                // Для chartjs-plugin-zoom нужно указывать ВСЕ подключи (wheel, pinch, drag) —
+                // частичный конфиг роняет создание графика с неочевидной ошибкой.
+                zoom: {
+                    limits: {
+                        x: { min: "original", max: "original" },
+                    },
+                    pan: { enabled: true, mode: "xy" },
+                    zoom: {
+                        wheel: { enabled: true },
+                        pinch: { enabled: true },
+                        drag: {
+                            enabled: true,
+                            modifierKey: "shift",
+                            backgroundColor: "rgba(0, 200, 255, 0.12)",
+                            borderColor: "#00c8ff",
+                        },
+                        mode: "xy",
+                    },
+                },
+            },
+        },
+    });
+    chart.$offline = [];
+    chart.$limits = [];
+    canvas.addEventListener("dblclick", () => chart.resetZoom());
+    return chart;
+}
+
+function offlineBands(rows) {
+    const bands = [];
+    let current = null;
+    for (const row of rows) {
+        const t = new Date(row.recorded_at).getTime();
+        if (!row.online) {
+            if (current) current[1] = t;
+            else current = [t, t];
+        } else if (current) {
+            current[1] = t;
+            bands.push(current);
+            current = null;
+        }
+    }
+    if (current) bands.push(current);
+    return bands;
+}
+
+function setChartRows(chart, rows) {
+    for (const ds of chart.data.datasets) {
+        ds.data = rows.map((row) => ({
+            x: new Date(row.recorded_at).getTime(),
+            y: row.online === false ? null : (row[ds.field] ?? null),
+        }));
+    }
+    chart.$offline = offlineBands(rows);
+    chart.resetZoom();
+    chart.update();
+}
+
+// Границы на графике + так подбираем ось, чтобы пунктиры были видны
+function applyLimitsToChart(chamberId) {
+    const p = panels[chamberId];
+    if (!p) return;
+    const lines = [];
+    const axisFor = { temperature: "y", humidity: "y1" };
+    for (const param of Object.keys(axisFor)) {
+        const t = thresholds[`${chamberId}:${param}`];
+        const axis = axisFor[param];
+        const scale = p.chart.options.scales[axis];
+        scale.suggestedMin = undefined;
+        scale.suggestedMax = undefined;
+        if (!t || !t.enabled || (axis === "y1" && !p.caps.has_humidity)) continue;
+        const color = param === "temperature" ? "rgba(255, 138, 128, 0.9)" : "rgba(197, 225, 165, 0.9)";
+        if (t.min_value != null) { lines.push({ axis, value: t.min_value, color }); scale.suggestedMin = t.min_value - 0.5; }
+        if (t.max_value != null) { lines.push({ axis, value: t.max_value, color }); scale.suggestedMax = t.max_value + 0.5; }
+    }
+    p.chart.$limits = lines;
+    p.chart.update("none");
+}
+
+// ------------------------------------------------------------------ panels
+
+function createPanel(chamber) {
+    const id = chamber.chamber_id;
+    const caps = chamber;
     const panel = document.createElement("div");
     panel.className = "panel";
 
+    const humidityHtml = caps.has_humidity
+        ? `<span class="secondary" id="hum-${id}">Влажность <b>--.-</b> %</span>` : "";
+    const targetTHtml = caps.has_target_temperature
+        ? `<span class="secondary" id="tt-${id}">Уставка <b>--.-</b> °C</span>` : "";
+    const targetHHtml = caps.has_target_humidity
+        ? `<span class="secondary" id="th-${id}">Уставка вл. <b>--</b> %</span>` : "";
+
     panel.innerHTML = `
         <div class="panel-header">
-            <b>Камера ${chamberId} (${ip})</b>
-            <span class="status offline" id="status-${chamberId}">● OFFLINE</span>
+            <b>${escapeHtml(chamber.name || `Камера ${id}`)} (${escapeHtml(chamber.ip)})<span class="mode-badge" id="badge-${id}" hidden></span></b>
+            <span class="status unknown" id="status-${id}">● ОПРОС…</span>
         </div>
-        <div class="temperature" id="temp-${chamberId}">--.-- °C</div>
-        <canvas id="chart-${chamberId}"></canvas>
-        <div class="updated" id="updated-${chamberId}">Последнее обновление: ---</div>
+        <div class="values">
+            <span class="temperature stale" id="temp-${id}">--.-- °C</span>
+            ${targetTHtml}${humidityHtml}${targetHHtml}
+        </div>
+        <div class="thresholds">
+            <div id="thr-rows-${id}"><span class="muted">Границы загружаются…</span></div>
+            <form class="threshold-form" id="thr-form-${id}" autocomplete="off">
+                <div class="form-title" id="thr-title-${id}"></div>
+                <label class="field">Нижняя граница
+                    <input type="number" step="0.1" name="min_value">
+                </label>
+                <label class="field">Верхняя граница
+                    <input type="number" step="0.1" name="max_value">
+                </label>
+                <label class="check full"><input type="checkbox" name="enabled"> Проверять и присылать уведомления</label>
+                <label class="field">Ваше имя (необязательно)
+                    <input type="text" name="actor_name" maxlength="128">
+                </label>
+                <label class="field">Комментарий (необязательно)
+                    <input type="text" name="comment" maxlength="2000">
+                </label>
+                <div class="form-error"></div>
+                <button type="submit" class="primary">Сохранить</button>
+                <button type="button" data-action="cancel">Отмена</button>
+            </form>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-${id}"></canvas></div>
+        <div class="updated" id="updated-${id}">Последнее обновление: ---</div>
+        <div class="meta" id="meta-${id}"></div>
+        <div class="controls">
+            <label class="field">Начало периода
+                <input type="datetime-local" id="from-${id}" step="1">
+            </label>
+            <label class="field">Конец периода
+                <input type="datetime-local" id="to-${id}" step="1">
+            </label>
+        </div>
+        <div class="presets">Быстро:
+            <button type="button" data-hours="1">1 час</button>
+            <button type="button" data-hours="6">6 часов</button>
+            <button type="button" data-hours="24">сутки</button>
+            <button type="button" data-hours="168">неделя</button>
+            <button type="button" data-hours="720">30 дней</button>
+        </div>
         <div class="actions">
-            <a href="/api/export/${chamberId}?format=csv" target="_blank">Скачать CSV</a>
-            <a href="/api/export/${chamberId}?format=xlsx" target="_blank">Скачать Excel</a>
+            <button type="button" class="primary" id="load-${id}">Показать период</button>
+            <button type="button" id="live-${id}">К прямому эфиру</button>
+            <button type="button" id="reset-${id}">Сбросить масштаб</button>
+            <a class="btn" id="csv-${id}" href="api/export/${id}?format=csv">Скачать CSV</a>
+            <a class="btn" id="xlsx-${id}" href="api/export/${id}?format=xlsx">Скачать Excel</a>
         </div>
     `;
 
     GRID.appendChild(panel);
 
-    const ctx = panel.querySelector(`#chart-${chamberId}`).getContext("2d");
+    const $ = (sel) => panel.querySelector(sel);
+    const p = {
+        id,
+        caps,
+        el: panel,
+        chart: makeChart($(`#chart-${id}`), seriesFor(caps)),
+        mode: "live",
+        fromEl: $(`#from-${id}`),
+        toEl: $(`#to-${id}`),
+        metaEl: $(`#meta-${id}`),
+        badgeEl: $(`#badge-${id}`),
+        statusEl: $(`#status-${id}`),
+        tempEl: $(`#temp-${id}`),
+        humEl: $(`#hum-${id}`),
+        ttEl: $(`#tt-${id}`),
+        thEl: $(`#th-${id}`),
+        updatedEl: $(`#updated-${id}`),
+        thrRowsEl: $(`#thr-rows-${id}`),
+        formEl: $(`#thr-form-${id}`),
+        formTitleEl: $(`#thr-title-${id}`),
+        editing: null,
+        breaches: {},
+        online: null,
+    };
 
-    const chart = new Chart(ctx, {
-        type: "line",
-        data: {
-            labels: [],
-            datasets: [{
-                label: "°C",
-                data: [],
-                borderColor: "#00c8ff",
-                backgroundColor: "transparent",
-                tension: 0.2,
-                pointRadius: 0,
-            }]
-        },
-        options: {
-            animation: false,
-            responsive: true,
-            scales: {
-                x: { display: false },
-                y: {
-                    ticks: { color: "#ccc" },
-                    grid: { color: "#3a3a3a" }
-                }
-            },
-            plugins: {
-                legend: { display: false }
-            }
-        }
+    const syncExportLinks = () => {
+        const q = rangeParams(p.fromEl, p.toEl).toString();
+        const suffix = q ? `&${q}` : "";
+        $(`#csv-${id}`).href = `api/export/${id}?format=csv${suffix}`;
+        $(`#xlsx-${id}`).href = `api/export/${id}?format=xlsx${suffix}`;
+    };
+    p.syncExportLinks = syncExportLinks;
+
+    p.fromEl.addEventListener("change", syncExportLinks);
+    p.toEl.addEventListener("change", syncExportLinks);
+
+    panel.querySelectorAll(".presets button").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const now = new Date();
+            p.fromEl.value = toLocalInput(new Date(now.getTime() - Number(btn.dataset.hours) * 3600e3));
+            p.toEl.value = toLocalInput(now);
+            syncExportLinks();
+            loadHistory(id, { live: false });
+        });
     });
 
-    return {
-        chart,
-        statusEl: panel.querySelector(`#status-${chamberId}`),
-        tempEl: panel.querySelector(`#temp-${chamberId}`),
-        updatedEl: panel.querySelector(`#updated-${chamberId}`),
-    };
+    $(`#reset-${id}`).addEventListener("click", () => p.chart.resetZoom());
+    $(`#load-${id}`).addEventListener("click", () => {
+        if (!p.fromEl.value && !p.toEl.value) {
+            p.metaEl.textContent = "Укажите начало и/или конец периода";
+            p.metaEl.classList.add("error");
+            return;
+        }
+        loadHistory(id, { live: false });
+    });
+    $(`#live-${id}`).addEventListener("click", () => {
+        p.fromEl.value = "";
+        p.toEl.value = "";
+        syncExportLinks();
+        loadHistory(id, { live: true });
+    });
+
+    p.formEl.addEventListener("submit", (event) => {
+        event.preventDefault();
+        saveThreshold(id);
+    });
+    p.formEl.querySelector('[data-action="cancel"]').addEventListener("click", () => closeThresholdForm(id));
+    p.thrRowsEl.addEventListener("click", (event) => {
+        const btn = event.target.closest("[data-edit]");
+        if (btn) openThresholdForm(id, btn.dataset.edit);
+    });
+
+    return p;
 }
 
-function pushPoint(chamberId, temperature, recordedAt) {
-    const p = panels[chamberId];
-    if (!p) return;
+function setMode(p, mode) {
+    p.mode = mode;
+    p.el.classList.toggle("mode-history", mode === "history");
+    p.badgeEl.hidden = mode === "live";
+    p.badgeEl.textContent = mode === "history" ? "период из БД" : "";
+}
 
-    const label = new Date(recordedAt).toLocaleTimeString("ru-RU");
-
-    p.chart.data.labels.push(label);
-    p.chart.data.datasets[0].data.push(temperature);
-
-    // Ограничиваем число точек на графике (аналог GRAPH_POINTS)
-    const MAX_POINTS = 600;
-    if (p.chart.data.labels.length > MAX_POINTS) {
-        p.chart.data.labels.shift();
-        p.chart.data.datasets[0].data.shift();
+function setStatus(p, online) {
+    p.online = online;
+    if (online === true) {
+        p.statusEl.textContent = "● ONLINE";
+        p.statusEl.className = "status online";
+    } else if (online === false) {
+        p.statusEl.textContent = "● OFFLINE";
+        p.statusEl.className = "status offline";
+    } else {
+        p.statusEl.textContent = "● ОПРОС…";
+        p.statusEl.className = "status unknown";
     }
-
-    p.chart.update();
 }
 
-function applyUpdate(msg) {
+function renderValues(p, msg) {
+    const known = msg.online !== false && msg.temperature != null;
+    p.tempEl.textContent = known ? `${fmtNum(msg.temperature)} °C` : "--.-- °C";
+    p.tempEl.classList.toggle("stale", !known);
+    const setSecondary = (el, value, digits) => {
+        if (!el) return;
+        el.querySelector("b").textContent = value == null ? "--" : fmtNum(value, digits);
+    };
+    setSecondary(p.humEl, known ? msg.humidity : null, 1);
+    setSecondary(p.ttEl, known ? msg.target_temperature : null, 1);
+    setSecondary(p.thEl, known ? msg.target_humidity : null, 1);
+}
+
+function renderBreaches(p) {
+    // Пока нет связи, реальное значение неизвестно — подсветку превышения не показываем
+    const show = p.online !== false;
+    const tBreach = show && !!p.breaches.temperature;
+    const hBreach = show && !!p.breaches.humidity;
+    p.tempEl.classList.toggle("breach", tBreach);
+    if (p.humEl) p.humEl.classList.toggle("breach", hBreach);
+    p.thrRowsEl.querySelectorAll(".threshold-row").forEach((row) => {
+        row.classList.toggle("breach", show && !!p.breaches[row.dataset.param]);
+    });
+}
+
+function pushLivePoint(p, msg) {
+    const t = new Date(msg.recorded_at).getTime();
+    const offline = msg.online === false;
+    for (const ds of p.chart.data.datasets) {
+        ds.data.push({ x: t, y: offline ? null : (msg[ds.field] ?? null) });
+        if (ds.data.length > LIVE_MAX_POINTS) ds.data.shift();
+    }
+    const bands = p.chart.$offline;
+    const last = bands[bands.length - 1];
+    if (offline) {
+        if (last && last.open) last[1] = t;
+        else { const band = [t, t]; band.open = true; bands.push(band); }
+    } else if (last && last.open) {
+        last[1] = t;
+        last.open = false;
+    }
+    p.chart.update("none");
+}
+
+function applyMeasurement(msg) {
     const p = panels[msg.chamber_id];
     if (!p) return;
 
-    if (msg.online) {
-        p.statusEl.textContent = "● ONLINE";
-        p.statusEl.className = "status online";
-        p.tempEl.textContent = msg.temperature.toFixed(2) + " °C";
-        p.updatedEl.textContent = "Последнее обновление: " + fmtTime(msg.recorded_at);
-        pushPoint(msg.chamber_id, msg.temperature, msg.recorded_at);
-    } else {
-        p.statusEl.textContent = "● OFFLINE";
-        p.statusEl.className = "status offline";
-        p.tempEl.textContent = "--.-- °C";
-    }
+    // Единичный сбой опроса (камера ещё не признана офлайн) — ничего не меняем
+    if (msg.stale && msg.online) return;
+
+    setStatus(p, msg.online);
+    p.breaches = msg.breaches || {};
+    renderBreaches(p);
+
+    // В режиме просмотра периода шапку и график не трогаем, только статус
+    if (p.mode !== "live") return;
+
+    renderValues(p, msg);
+    if (msg.online) p.updatedEl.textContent = "Последнее обновление: " + fmtTime(msg.recorded_at);
+    pushLivePoint(p, msg);
 }
 
-async function loadHistory(chamberId) {
-    const res = await fetch(`/api/history/${chamberId}`);
-    if (!res.ok) return;
-
-    const rows = await res.json();
+async function loadHistory(chamberId, { live }) {
     const p = panels[chamberId];
+    if (!p) return;
 
-    for (const row of rows) {
-        if (row.online) {
-            p.chart.data.labels.push(new Date(row.recorded_at).toLocaleTimeString("ru-RU"));
-            p.chart.data.datasets[0].data.push(row.temperature);
-        }
+    const params = live ? new URLSearchParams() : rangeParams(p.fromEl, p.toEl);
+    p.metaEl.classList.remove("error");
+    p.metaEl.textContent = "Загрузка…";
+
+    let res;
+    try {
+        res = await fetch(`api/history/${chamberId}?${params.toString()}`);
+    } catch (e) {
+        p.metaEl.textContent = "Сервер недоступен";
+        p.metaEl.classList.add("error");
+        return;
     }
-    p.chart.update();
+    if (!res.ok) {
+        p.metaEl.textContent = await errorText(res, "Не удалось загрузить данные");
+        p.metaEl.classList.add("error");
+        return;
+    }
 
-    if (rows.length > 0) {
+    const payload = await res.json();
+    const rows = payload.points || [];
+    setMode(p, live ? "live" : "history");
+    setChartRows(p.chart, rows);
+    p.metaEl.textContent = (live ? "Прямой эфир. " : "Период из БД. ") + describeSlice(payload);
+
+    if (!live && rows.length === 0) {
+        p.metaEl.textContent = "За выбранный период данных нет";
+    }
+
+    if (live && rows.length > 0) {
         const last = rows[rows.length - 1];
-        p.tempEl.textContent = last.temperature.toFixed(2) + " °C";
-        p.updatedEl.textContent = "Последнее обновление: " + fmtTime(last.recorded_at);
-        p.statusEl.textContent = last.online ? "● ONLINE" : "● OFFLINE";
-        p.statusEl.className = "status " + (last.online ? "online" : "offline");
+        renderValues(p, last);
+        const lastOnline = [...rows].reverse().find((r) => r.online);
+        if (lastOnline) p.updatedEl.textContent = "Последнее обновление: " + fmtTime(lastOnline.recorded_at);
     }
 }
+
+// -------------------------------------------------------------- thresholds
+
+async function loadThresholds() {
+    try {
+        const res = await fetch("api/thresholds");
+        if (!res.ok) return;
+        for (const t of await res.json()) thresholds[`${t.chamber_id}:${t.parameter}`] = t;
+    } catch (e) {
+        return;
+    }
+    Object.values(panels).forEach((p) => renderThresholds(p.id));
+}
+
+function renderThresholds(chamberId) {
+    const p = panels[chamberId];
+    if (!p) return;
+    const params = ["temperature"];
+    if (p.caps.has_humidity) params.push("humidity");
+
+    p.thrRowsEl.innerHTML = params.map((param) => {
+        const t = thresholds[`${chamberId}:${param}`];
+        const info = PARAM_INFO[param];
+        if (!t) return `<div class="threshold-row"><span>${info.label}: границы не заданы</span></div>`;
+        const who = t.updated_by ? `, изменил: ${escapeHtml(t.updated_by)}` : "";
+        const when = t.updated_at ? ` ${fmtTime(t.updated_at)}` : "";
+        return `
+            <div class="threshold-row ${t.enabled ? "" : "disabled"}" data-param="${param}"
+                 title="Изменено${when}${who}">
+                <span>${info.label}: <span class="range">${fmtBound(t.min_value)} … ${fmtBound(t.max_value)} ${info.unit}</span>
+                    ${t.enabled ? "" : '<span class="muted">(проверка выключена)</span>'}</span>
+                <button type="button" class="link-btn" data-edit="${param}">изменить</button>
+            </div>`;
+    }).join("");
+    renderBreaches(p);
+    applyLimitsToChart(chamberId);
+}
+
+function openThresholdForm(chamberId, param) {
+    const p = panels[chamberId];
+    const t = thresholds[`${chamberId}:${param}`] || { min_value: null, max_value: null, enabled: true };
+    const f = p.formEl;
+    p.editing = param;
+    p.formTitleEl.textContent = `${PARAM_INFO[param].label}, ${PARAM_INFO[param].unit} — ${chamberName(chamberId)}`;
+    f.min_value.value = t.min_value ?? "";
+    f.max_value.value = t.max_value ?? "";
+    f.enabled.checked = t.enabled !== false;
+    f.comment.value = "";
+    try { f.actor_name.value = localStorage.getItem("climatica.actorName") || ""; } catch (e) { /* нет доступа */ }
+    f.querySelector(".form-error").textContent = "";
+    f.classList.add("open");
+    f.min_value.focus();
+}
+
+function closeThresholdForm(chamberId) {
+    const p = panels[chamberId];
+    p.formEl.classList.remove("open");
+    p.editing = null;
+}
+
+async function saveThreshold(chamberId) {
+    const p = panels[chamberId];
+    const f = p.formEl;
+    const errEl = f.querySelector(".form-error");
+    const param = p.editing;
+    const num = (v) => (v === "" ? null : Number(v));
+    const body = {
+        min_value: num(f.min_value.value),
+        max_value: num(f.max_value.value),
+        enabled: f.enabled.checked,
+        actor_name: f.actor_name.value.trim() || null,
+        comment: f.comment.value.trim() || null,
+    };
+
+    if (body.min_value == null && body.max_value == null) {
+        errEl.textContent = "Задайте хотя бы одну границу";
+        return;
+    }
+    if (body.min_value != null && body.max_value != null && body.min_value >= body.max_value) {
+        errEl.textContent = "Нижняя граница должна быть меньше верхней";
+        return;
+    }
+
+    const submit = f.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+        const res = await fetch(`api/thresholds/${chamberId}/${param}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            errEl.textContent = await errorText(res, "Не удалось сохранить");
+            return;
+        }
+        const t = await res.json();
+        thresholds[`${chamberId}:${param}`] = t;
+        try { if (body.actor_name) localStorage.setItem("climatica.actorName", body.actor_name); } catch (e) { /* нет доступа */ }
+        closeThresholdForm(chamberId);
+        renderThresholds(chamberId);
+    } catch (e) {
+        errEl.textContent = "Сервер недоступен";
+    } finally {
+        submit.disabled = false;
+    }
+}
+
+// ------------------------------------------------------------ notifications
+
+const ALERT_TITLES = {
+    chamber_offline: "🔴 Камера отключилась",
+    chamber_online: "🟢 Камера снова на связи",
+    threshold_breach: "⚠️ Выход за границы",
+    threshold_recovery: "✅ Значение в норме",
+    threshold_changed: "🛠 Изменены границы",
+    delivery_failed: "📭 Ошибка доставки в Telegram",
+    system: "ℹ️ Система",
+};
+const DEFAULT_ALERT_TITLE = "ℹ️ Уведомление Climatica";
+
+function alertTitle(alert) {
+    return ALERT_TITLES[alert.alert_type] || DEFAULT_ALERT_TITLE;
+}
+
+function notificationsSupported() {
+    return "Notification" in window && window.isSecureContext;
+}
+
+function updateNotifyButton() {
+    const btn = document.getElementById("notify-btn");
+    if (!("Notification" in window)) {
+        btn.textContent = "🔕 Браузер не поддерживает уведомления";
+        btn.disabled = true;
+    } else if (!window.isSecureContext) {
+        btn.textContent = "🔕 Системные уведомления недоступны по http";
+        btn.title = "Браузер разрешает системные уведомления только по https или на localhost. " +
+            "Уведомления всё равно показываются внутри страницы (в правом нижнем углу).";
+    } else if (Notification.permission === "granted") {
+        btn.textContent = "🔔 Уведомления браузера включены";
+        btn.disabled = true;
+    } else if (Notification.permission === "denied") {
+        btn.textContent = "🔕 Уведомления запрещены в настройках браузера";
+        btn.disabled = true;
+    }
+}
+
+async function requestNotificationPermission() {
+    if (!("Notification" in window)) return;
+    if (!window.isSecureContext) {
+        showToast({
+            alert_type: "system",
+            severity: "warning",
+            message: "Системные уведомления браузера работают только по https:// или на http://localhost. " +
+                "Сейчас сайт открыт по http — уведомления будут появляться только внутри этой вкладки. " +
+                "Основной канал оповещений — Telegram-бот.",
+        });
+        return;
+    }
+    // Запрос разрешения — только по клику: браузеры блокируют автоматический запрос
+    await Notification.requestPermission();
+    updateNotifyButton();
+}
+
+function showBrowserNotification(alert) {
+    if (!notificationsSupported() || Notification.permission !== "granted") return false;
+    try {
+        const n = new Notification(alertTitle(alert), {
+            body: alert.message,
+            tag: `climatica-alert-${alert.id}`,   // одно событие = одно уведомление
+            requireInteraction: alert.severity === "critical",
+        });
+        n.onclick = () => { window.focus(); n.close(); };
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function showToast(alert) {
+    const box = document.getElementById("toasts");
+    const el = document.createElement("div");
+    el.className = `toast ${alert.severity || "info"}`;
+    el.innerHTML = `<b>${escapeHtml(alertTitle(alert))}</b>${escapeHtml(alert.message)}`;
+    el.addEventListener("click", () => el.remove());
+    box.appendChild(el);
+    while (box.children.length > 5) box.firstChild.remove();
+    // Критичные висят, пока не закроют; остальные исчезают сами
+    if (alert.severity !== "critical") setTimeout(() => el.remove(), 12000);
+}
+
+function handleAlert(alert) {
+    showToast(alert);
+    if (document.hidden) showBrowserNotification(alert);
+
+    if (alert.alert_type === "threshold_changed" && alert.chamber_id != null) {
+        loadThresholds();
+    }
+    if (journalState.tab === "alerts" && !journalState.filtered) {
+        loadJournal();
+    } else if (journalState.tab === "audit" && alert.alert_type === "threshold_changed" && !journalState.filtered) {
+        loadJournal();
+    }
+}
+
+// ---------------------------------------------------------------- websocket
+
+let wsRetry = 0;
 
 function connectWebSocket() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    // Каталог текущей страницы: "/" при прямом доступе, "/climatica/" за шлюзом
+    const dir = location.pathname.replace(/[^/]*$/, "");
+    const ws = new WebSocket(`${proto}://${location.host}${dir}ws`);
+    const conn = document.getElementById("conn");
 
-    ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "measurement") {
-            applyUpdate(msg);
-        }
+    ws.onopen = () => {
+        wsRetry = 0;
+        conn.textContent = "● на связи с сервером";
+        conn.className = "conn ok";
     };
 
+    ws.onmessage = (event) => {
+        let msg;
+        try { msg = JSON.parse(event.data); } catch (e) { return; }
+        if (msg.type === "measurement") applyMeasurement(msg);
+        else if (msg.type === "alert") handleAlert(msg);
+    };
+
+    ws.onerror = (event) => console.warn("WebSocket error", event);
+
     ws.onclose = () => {
-        // Простая переподключалка через 2 секунды
-        setTimeout(connectWebSocket, 2000);
+        conn.textContent = "● нет связи с сервером, переподключение…";
+        conn.className = "conn bad";
+        wsRetry += 1;
+        setTimeout(connectWebSocket, Math.min(10000, 1000 * wsRetry));
     };
 }
 
+// ------------------------------------------------------------------- import
+
+function addImportPanel(filename, payload) {
+    const id = ++importSeq;
+    const fields = ["temperature", "target_temperature", "humidity", "target_humidity"]
+        .filter((f) => (payload.columns || ["temperature"]).includes(f));
+
+    const panel = document.createElement("div");
+    panel.className = "panel mode-import";
+    panel.innerHTML = `
+        <div class="panel-header">
+            <b>Импорт: ${escapeHtml(filename)}</b>
+            <span class="status file">● ИЗ ФАЙЛА</span>
+        </div>
+        <div class="chart-wrap"><canvas></canvas></div>
+        <div class="meta">${escapeHtml(describeSlice(payload))}</div>
+        <div class="actions">
+            <button type="button" data-action="reset">Сбросить масштаб</button>
+            <button type="button" class="danger" data-action="close">Закрыть</button>
+        </div>
+    `;
+    IMPORTS.appendChild(panel);
+
+    const chart = makeChart(panel.querySelector("canvas"), fields.length ? fields : ["temperature"]);
+    setChartRows(chart, payload.points || []);
+
+    panel.querySelector('[data-action="reset"]').addEventListener("click", () => chart.resetZoom());
+    panel.querySelector('[data-action="close"]').addEventListener("click", () => {
+        chart.destroy();
+        panel.remove();
+    });
+}
+
+document.getElementById("import-file").addEventListener("change", async (event) => {
+    const input = event.target;
+    const file = input.files && input.files[0];
+    const status = document.getElementById("import-status");
+    if (!file) return;
+
+    status.textContent = "Читаю файл…";
+    const body = new FormData();
+    body.append("file", file);
+
+    try {
+        const res = await fetch("api/import", { method: "POST", body });
+        if (!res.ok) {
+            status.textContent = await errorText(res, "Ошибка импорта");
+            return;
+        }
+        const payload = await res.json();
+        addImportPanel(payload.filename || file.name, payload);
+        status.textContent = `Открыт: ${payload.filename || file.name}`;
+    } catch (err) {
+        status.textContent = "Не удалось отправить файл";
+    } finally {
+        input.value = "";
+    }
+});
+
+// ------------------------------------------------------------------ journal
+
+const journalState = { tab: "alerts", filtered: false };
+const ACTION_LABELS = { threshold_changed: "Изменение границ" };
+
+function journalParams() {
+    const params = rangeParams(document.getElementById("j-from"), document.getElementById("j-to"));
+    const chamber = document.getElementById("j-chamber").value;
+    if (chamber) params.set("chamber_id", chamber);
+    return params;
+}
+
+function syncJournalLinks() {
+    const base = journalState.tab === "alerts" ? "api/alerts/export" : "api/audit-log/export";
+    const q = journalParams().toString();
+    document.getElementById("j-csv").href = `${base}?format=csv${q ? "&" + q : ""}`;
+    document.getElementById("j-xlsx").href = `${base}?format=xlsx${q ? "&" + q : ""}`;
+}
+
+function fmtRange(v) {
+    if (!v) return "—";
+    const text = `${fmtBound(v.min_value)} … ${fmtBound(v.max_value)}`;
+    return v.enabled === false ? `${text} (выкл)` : text;
+}
+
+async function loadJournal() {
+    const params = journalParams();
+    journalState.filtered = params.has("date_from") || params.has("date_to");
+    params.set("limit", "500");
+    const url = journalState.tab === "alerts" ? "api/alerts" : "api/audit-log";
+    const meta = document.getElementById("j-meta");
+    const table = document.getElementById("j-table");
+
+    let rows;
+    try {
+        const res = await fetch(`${url}?${params}`);
+        if (!res.ok) {
+            meta.textContent = await errorText(res, "Не удалось загрузить журнал");
+            return;
+        }
+        rows = await res.json();
+    } catch (e) {
+        meta.textContent = "Сервер недоступен";
+        return;
+    }
+
+    meta.textContent = rows.length === 500
+        ? "Показаны последние 500 записей — сузьте период или скачайте выгрузку"
+        : `Записей: ${rows.length}`;
+
+    if (journalState.tab === "alerts") {
+        table.innerHTML = `
+            <tr><th>Время</th><th>Событие</th><th>Камера</th><th>Сообщение</th><th>Telegram</th></tr>
+            ${rows.map((r) => `
+                <tr class="sev-${escapeHtml(r.severity)}">
+                    <td class="nowrap">${escapeHtml(fmtTime(r.created_at))}</td>
+                    <td class="nowrap">${escapeHtml(alertTitle(r))}</td>
+                    <td>${escapeHtml(chamberName(r.chamber_id))}</td>
+                    <td>${escapeHtml(r.message)}</td>
+                    <td class="nowrap" title="${escapeHtml(r.last_error || "")}">${r.delivered
+                        ? "✔ доставлено"
+                        : `✖ попыток: ${r.delivery_attempts}`}</td>
+                </tr>`).join("")}`;
+    } else {
+        table.innerHTML = `
+            <tr><th>Время</th><th>Действие</th><th>Камера</th><th>Было → стало</th><th>Кто</th><th>IP / компьютер</th><th>Комментарий</th></tr>
+            ${rows.map((r) => `
+                <tr class="sev-info">
+                    <td class="nowrap">${escapeHtml(fmtTime(r.created_at))}</td>
+                    <td>${escapeHtml(ACTION_LABELS[r.action] || r.action)}<br>
+                        <span class="muted">${escapeHtml(PARAM_INFO[r.parameter]?.label || r.parameter || "")}</span></td>
+                    <td>${escapeHtml(chamberName(r.chamber_id))}</td>
+                    <td class="nowrap">${escapeHtml(fmtRange(r.old_value))} → ${escapeHtml(fmtRange(r.new_value))}</td>
+                    <td>${escapeHtml(r.actor_name || "—")}</td>
+                    <td>${escapeHtml(r.actor_ip || "—")}${r.actor_host ? `<br><span class="muted">${escapeHtml(r.actor_host)}</span>` : ""}</td>
+                    <td>${escapeHtml(r.comment || "")}</td>
+                </tr>`).join("")}`;
+    }
+}
+
+function initJournal(chambers) {
+    const select = document.getElementById("j-chamber");
+    for (const c of chambers) {
+        const opt = document.createElement("option");
+        opt.value = c.chamber_id;
+        opt.textContent = c.name || `Камера ${c.chamber_id}`;
+        select.appendChild(opt);
+    }
+    document.querySelectorAll("#journal .tabs button").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            document.querySelectorAll("#journal .tabs button").forEach((b) => b.classList.toggle("active", b === btn));
+            journalState.tab = btn.dataset.tab;
+            syncJournalLinks();
+            loadJournal();
+        });
+    });
+    for (const id of ["j-from", "j-to", "j-chamber"]) {
+        document.getElementById(id).addEventListener("change", syncJournalLinks);
+    }
+    document.getElementById("j-show").addEventListener("click", loadJournal);
+    syncJournalLinks();
+    loadJournal();
+}
+
+// --------------------------------------------------------------------- init
+
 async function init() {
-    const res = await fetch("/api/chambers");
-    const chambers = await res.json();
+    document.getElementById("notify-btn").addEventListener("click", requestNotificationPermission);
+    updateNotifyButton();
 
-    for (const { chamber_id, ip } of chambers) {
-        panels[chamber_id] = createPanel(chamber_id, ip);
+    let chambers = [];
+    try {
+        const res = await fetch("api/chambers");
+        chambers = await res.json();
+    } catch (e) {
+        document.getElementById("conn").textContent = "● сервер недоступен";
+        document.getElementById("conn").className = "conn bad";
+        return;
     }
 
-    for (const { chamber_id } of chambers) {
-        await loadHistory(chamber_id);
+    for (const chamber of chambers) {
+        if (chamber.name) chamberNames[chamber.chamber_id] = chamber.name;
+        panels[chamber.chamber_id] = createPanel(chamber);
     }
 
+    // WS подключаем сразу, чтобы не пропустить события, пока грузится история
     connectWebSocket();
+    await loadThresholds();
+    await Promise.all(chambers.map((c) => loadHistory(c.chamber_id, { live: true })));
+    initJournal(chambers);
 }
 
 init();

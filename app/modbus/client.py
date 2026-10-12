@@ -57,16 +57,28 @@ class FridgeClient:
 
     @staticmethod
     def _parse_registers(data: bytes) -> list[int]:
+        # slave + func + count + CRC(2) — меньше 5 байт быть не может
+        if len(data) < 5:
+            raise RuntimeError(f"Слишком короткий ответ ({len(data)} байт)")
+
         crc_recv = struct.unpack("<H", data[-2:])[0]
         crc_calc = crc16(data[:-2])
 
         if crc_recv != crc_calc:
             raise RuntimeError("CRC error")
 
+        if data[1] & 0x80:
+            raise RuntimeError(f"Modbus exception, код {data[2]}")
+
         if data[1] != 0x03:
             raise RuntimeError("Invalid function")
 
         count = data[2]
+
+        if len(data) < 3 + count + 2:
+            raise RuntimeError(
+                f"Обрезанный ответ: заявлено {count} байт данных, получено {len(data) - 5}"
+            )
 
         registers = []
         offset = 3
@@ -97,7 +109,7 @@ class FridgeClient:
                 )
             except asyncio.TimeoutError:
                 raise TimeoutError(
-                    f"Timeout opрашивая камеру {self.slave} ({self.ip})"
+                    f"Таймаут опроса камеры {self.slave} ({self.ip})"
                 )
 
             if protocol.exception is not None:
@@ -111,6 +123,32 @@ class FridgeClient:
         finally:
             transport.close()
 
+    @staticmethod
+    def registers_to_values(registers: list[int]) -> dict[str, float | None]:
+        """
+        Переводит сырые регистры в значения по индексам из настроек.
+        Параметры с индексом -1 (или за пределами ответа) возвращаются как None.
+        """
+
+        def pick(index: int) -> float | None:
+            if index < 0 or index >= len(registers):
+                return None
+            return registers[index] / settings.REGISTER_SCALE
+
+        temperature = pick(settings.TEMPERATURE_REGISTER_INDEX)
+
+        if temperature is None:
+            raise RuntimeError("В ответе нет регистра температуры")
+
+        return {
+            "temperature": temperature,
+            "humidity": pick(settings.HUMIDITY_REGISTER_INDEX),
+            "target_temperature": pick(settings.TARGET_TEMPERATURE_REGISTER_INDEX),
+            "target_humidity": pick(settings.TARGET_HUMIDITY_REGISTER_INDEX),
+        }
+
+    async def read_values(self) -> dict[str, float | None]:
+        return self.registers_to_values(await self.read_registers())
+
     async def read_temperature(self) -> float:
-        registers = await self.read_registers()
-        return registers[0] / 100.0
+        return (await self.read_values())["temperature"]  # type: ignore[return-value]

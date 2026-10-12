@@ -1,6 +1,13 @@
 __pycache__/
 *.pyc
 .env
+bot/.env
 *.db
 climatica_exports/
+logs/
 .venv/
+tests/node_modules/
+.pytest_cache/
+xray/config.json
+*.tgz
+.claude/
